@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera, Perspective &amp; the Dolly Zoom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="hero">
+    <p class="eyebrow">Project 0 &middot; Cameras &amp; Perspective</p>
+    <h1>Becoming Friends with Every Pixel</h1>
+    <p class="subtitle">Perspective, focal length, and the center of projection, explored with my own camera.</p>
+    <p class="byline">Lorraine Xu &middot; <a href="mailto:lorraine_xu@berkeley.edu">lorraine_xu@berkeley.edu</a></p>
+  </header>
+
+  <nav class="toc">
+    <a href="#part1">Part 1 &middot; The Selfie</a>
+    <a href="#part2">Part 2 &middot; Architectural Compression</a>
+    <a href="#part3">Part 3 &middot; The Dolly Zoom</a>
+  </nav>
+
+  <main>
+
+    <section id="part1" class="part">
+      <div class="part-heading">
+        <span class="part-number">01</span>
+        <h2>The Selfie: The Wrong Way vs. The Right Way</h2>
+      </div>
+      <p class="intro">
+        Same face, same framing, but one shot was taken inches away with a wide lens,
+        and the other from several feet back, zoomed in to match the framing. The difference
+        is entirely about how close the camera's center of projection sits to the subject.
+      </p>
+
+      <div class="compare">
+        <figure>
+          <div class="frame">
+            <img src="media/part1-close.jpg" alt="Close-up selfie taken from a short distance, showing typical wide-angle facial distortion" onerror="this.closest('figure').classList.add('missing')">
+          </div>
+          <figcaption><strong>Wrong way</strong> &middot; camera inches from the face, no zoom</figcaption>
+        </figure>
+        <figure>
+          <div class="frame">
+            <img src="media/part1-zoomed.jpg" alt="Portrait taken from several feet away with the lens zoomed in to match the framing" onerror="this.closest('figure').classList.add('missing')">
+          </div>
+          <figcaption><strong>Right way</strong> &middot; camera several feet back, zoomed in to match</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="part2" class="part">
+      <div class="part-heading">
+        <span class="part-number">02</span>
+        <h2>Architectural Perspective Compression</h2>
+      </div>
+      <p class="intro">
+        The same idea, run in reverse on a building facade: one photo taken with a long zoom from
+        far away, the other taken up close with no zoom, matched so the facade is roughly the same
+        size in both frames.
+      </p>
+
+      <div class="compare">
+        <figure>
+          <div class="frame">
+            <img src="media/part2-zoomed.jpg" alt="Building facade photographed from far away with the lens zoomed in" onerror="this.closest('figure').classList.add('missing')">
+          </div>
+          <figcaption><strong>Zoomed, far away</strong> &middot; flattened / compressed</figcaption>
+        </figure>
+        <figure>
+          <div class="frame">
+            <img src="media/part2-walked.jpg" alt="Same building facade photographed up close with no zoom" onerror="this.closest('figure').classList.add('missing')">
+          </div>
+          <figcaption><strong>No zoom, up close</strong> &middot; exaggerated depth</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="part3" class="part">
+      <div class="part-heading">
+        <span class="part-number">03</span>
+        <h2>The Dolly Zoom</h2>
+      </div>
+      <p class="intro">
+        The "Vertigo shot": the camera physically moves back while the lens zooms in, timed so the
+        subject stays the same size throughout, while the background warps dramatically around it.
+      </p>
+
+      <div class="gif-wrap">
+        <img src="media/part3-dollyzoom.gif" alt="Animated GIF of a dolly zoom effect, subject staying constant size while the background perspective shifts" onerror="this.closest('div').classList.add('missing')">
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Project 0 &middot; Cameras, Perspective &amp; the Dolly Zoom</p>
+  </footer>
+
+</body>
+</html>
