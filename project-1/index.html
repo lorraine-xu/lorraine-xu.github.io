@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colorizing the Prokudin-Gorskii Photo Collection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="hero">
+    <p class="eyebrow">Project 1 &middot; Images of the Russian Empire</p>
+    <h1>Putting the Prokudin-Gorskii Plates Back in Color</h1>
+    <p class="subtitle">Aligning the red, green, and blue glass plate scans of Sergei Prokudin-Gorskii into single color photos, using exhaustive search, an image pyramid, and a handful of extra tricks to clean up the result.</p>
+    <p class="byline">Lorraine Xu &middot; <a href="mailto:lorraine_xu@berkeley.edu">lorraine_xu@berkeley.edu</a></p>
+  </header>
+
+  <nav class="toc">
+    <a href="#overview">Overview</a>
+    <a href="#singlescale">Single-Scale</a>
+    <a href="#pyramid">Pyramid</a>
+    <a href="#bells">Bells &amp; Whistles</a>
+    <a href="#versions">Version Notes</a>
+  </nav>
+
+  <main class="wide">
+
+    <section id="overview" class="part">
+      <div class="part-heading">
+        <span class="part-number">00</span>
+        <h2>Overview</h2>
+      </div>
+      <p class="intro">
+        Between 1907 and 1915, Sergei Prokudin-Gorskii photographed the Russian Empire in color,
+        years before color film existed. His trick was to take three black and white exposures of
+        the same scene through a red, a green, and a blue filter, one after another, on a single
+        tall glass plate. Stack the three exposures back together and you get a color photo, as
+        long as they line up.
+      </p>
+      <p>
+        They almost never line up perfectly. The camera moved slightly between exposures, or the
+        plate shifted, so the three channels need to be nudged back into place by hand, or in this
+        case, by code. This page walks through how I did that: a simple brute force search for the
+        small images, a coarse to fine pyramid for the huge full resolution scans, and five extra
+        techniques to make the final images look better than a plain stack of channels.
+      </p>
+    </section>
+
+    <section id="singlescale" class="part">
+      <div class="part-heading">
+        <span class="part-number">01</span>
+        <h2>Single-Scale Alignment</h2>
+      </div>
+      <p class="intro">
+        The idea is simple: try every small shift of the green and red channels against the blue
+        channel, score how well each shift lines them up, and keep the best one. I tried shifts
+        from -15 to 15 pixels in both directions, which is 31 by 31 = 961 candidates per channel.
+        I scored each candidate two ways: the L2 distance (just the raw pixel difference, lower is
+        better) and normalized cross-correlation, or NCC (how well the two images vary together
+        after removing their own brightness, higher is better).
+      </p>
+      <p>
+        One thing that mattered more than I expected: I had to crop out a margin before scoring
+        each candidate. Shifting an image with <code>np.roll</code> wraps pixels around from the
+        opposite edge, and comparing that wrapped edge to the real photo can quietly throw off which
+        shift looks best. Cutting off a margin equal to the search window before computing the score
+        fixed this.
+      </p>
+
+      <div class="grid-17" style="grid-template-columns: repeat(3, 1fr);">
+        <figure>
+          <div class="frame landscape"><img src="media/singlescale-cathedral.jpg" alt="Single-scale aligned cathedral.jpg"></div>
+          <figcaption><strong>cathedral.jpg</strong><span class="offset">G (2, 5) &middot; R (3, 12)</span></figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/singlescale-monastery.jpg" alt="Single-scale aligned monastery.jpg"></div>
+          <figcaption><strong>monastery.jpg</strong><span class="offset">G (2, -3) &middot; R (2, 3)</span></figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/singlescale-tobolsk.jpg" alt="Single-scale aligned tobolsk.jpg"></div>
+          <figcaption><strong>tobolsk.jpg</strong><span class="offset">G (3, 3) &middot; R (3, 6)</span></figcaption>
+        </figure>
+      </div>
+
+      <p>All offsets are written as (x, y), meaning (horizontal shift, vertical shift), and all three came out crisp with no ghosting.</p>
+
+      <p>
+        On this run, L2 and NCC agreed on the offsets for all three images. That is not always true on
+        the harder full resolution scans later on, where the two metrics sometimes land on slightly
+        different shifts, which I talk about in the bells and whistles section.
+      </p>
+    </section>
+
+    <section id="pyramid" class="part">
+      <div class="part-heading">
+        <span class="part-number">02</span>
+        <h2>Multi-Scale Pyramid Alignment</h2>
+      </div>
+      <p class="intro">
+        Brute force search works fine on a small jpg, but it falls apart on the full resolution
+        tif scans. Those images are much bigger, and the true offset between channels can be much
+        larger too, sometimes over a hundred pixels. Searching a wide enough window at full
+        resolution would take far too long.
+      </p>
+      <p>
+        The fix is a pyramid. I shrink both images by half repeatedly, using a simple 2 by 2 block
+        average (no library resize function), until the image is small enough to brute force search
+        cheaply. I find the best shift there, double it to convert it back to the next resolution up,
+        and then run a small brute force search around that estimate to correct any rounding error
+        from the doubling. I repeat this on the way back up to full resolution. This turns an
+        expensive search into a handful of cheap ones, and every image below finished in under 5
+        seconds.
+      </p>
+
+      <p>
+        Here are all 17 images (14 provided, plus 3 of my own from the Library of Congress
+        collection), aligned with the pyramid. All of them came out aligned with no visible ghosting.
+      </p>
+
+      <div class="grid-17">
+        <figure><div class="frame"><img src="media/pyramid-cathedral.jpg" alt="Aligned cathedral"></div><figcaption>cathedral<span class="offset">G (2,5) R (3,12)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-monastery.jpg" alt="Aligned monastery"></div><figcaption>monastery<span class="offset">G (2,-3) R (2,3)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-tobolsk.jpg" alt="Aligned tobolsk"></div><figcaption>tobolsk<span class="offset">G (3,3) R (3,6)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-church.jpg" alt="Aligned church"></div><figcaption>church<span class="offset">G (-4,23) R (-5,56)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-emir.jpg" alt="Aligned emir"></div><figcaption>emir *<span class="offset">G (23,49) R (40,106)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-harvesters.jpg" alt="Aligned harvesters"></div><figcaption>harvesters<span class="offset">G (10,59) R (7,120)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-icon.jpg" alt="Aligned icon"></div><figcaption>icon<span class="offset">G (16,42) R (22,89)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-ilemselga.jpg" alt="Aligned ilemselga"></div><figcaption>ilemselga *<span class="offset">G (-2,40) R (-4,134)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-melons.jpg" alt="Aligned melons"></div><figcaption>melons<span class="offset">G (4,83) R (7,176)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-religous_painting.jpg" alt="Aligned religious painting"></div><figcaption>religious_painting<span class="offset">G (3,25) R (7,69)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-self_portrait.jpg" alt="Aligned self portrait"></div><figcaption>self_portrait<span class="offset">G (2,70) R (2,154)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-siren.jpg" alt="Aligned siren"></div><figcaption>siren<span class="offset">G (-7,48) R (-20,100)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-three_generations.jpg" alt="Aligned three generations"></div><figcaption>three_generations<span class="offset">G (5,52) R (7,109)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-wharf.jpg" alt="Aligned wharf"></div><figcaption>wharf<span class="offset">G (-7,15) R (-17,83)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-own1_lighthouse.jpg" alt="Aligned color test chart, my own pick"></div><figcaption>my pick: color chart<span class="offset">G (-37,40) R (-80,107)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-own2.jpg" alt="Aligned trees at dusk, my own pick"></div><figcaption>my pick: trees at dusk<span class="offset">G (-40,75) R (-68,114)</span></figcaption></figure>
+        <figure><div class="frame"><img src="media/pyramid-own3.jpg" alt="Aligned garden, my own pick"></div><figcaption>my pick: garden<span class="offset">G (29,31) R (46,54)</span></figcaption></figure>
+      </div>
+
+      <p>
+        * <strong>emir</strong> and <strong>ilemselga</strong> needed one extra trick to align well:
+        aligning on image gradients instead of raw pixels. More on that in the bells and whistles
+        section below, since it explains why these two are marked.
+      </p>
+
+      <div class="note">
+        <strong>On failures.</strong> The assignment allows up to 1 of the 17 images to come out
+        misaligned. After the gradient fix for emir and ilemselga, all 17 of my images look aligned
+        with no visible ghosting. I do not have a failure case to report here, which is a nicer
+        problem to have than the alternative, but it does mean I do not have a "why it failed"
+        story for this part.
+      </div>
+    </section>
+
+    <section id="bells" class="part">
+      <div class="part-heading">
+        <span class="part-number">03</span>
+        <h2>Bells and Whistles</h2>
+      </div>
+      <p class="intro">
+        The plain aligned photos still have a few problems: some images need a different way of
+        measuring alignment, most look a little flat, some have a color cast, and almost all of them
+        have a colorful border left over from shifting the channels. Here are five things I tried to
+        fix that.
+      </p>
+
+      <ul class="sub-toc">
+        <li><a href="#bw-features">Better features</a></li>
+        <li><a href="#bw-contrast">Auto contrast</a></li>
+        <li><a href="#bw-whitebalance">Auto white balance</a></li>
+        <li><a href="#bw-crop">Auto crop</a></li>
+        <li><a href="#bw-colormap">Better color mapping</a></li>
+      </ul>
+
+      <h3 id="bw-features">Better features</h3>
+      <p>
+        <strong>emir.tif</strong> is a known hard case for this assignment: the blue channel and the
+        other two channels do not share the same brightness, so comparing raw pixels can point the
+        search toward the wrong shift. Even after widening my search window, aligning on raw pixels
+        still left visible ghosting once you zoom in on any fine detail, like the fabric pattern and
+        the belt he is wearing below.
+      </p>
+      <p>
+        The fix: instead of comparing raw pixel values, I compute a gradient magnitude map for each
+        channel first (how much the brightness changes at each pixel, using <code>np.gradient</code>),
+        and align on those maps instead. Edges tend to line up regardless of each channel's absolute
+        brightness, so this sidesteps the problem. I still apply the resulting shift to the original
+        color pixels, the gradient maps are only used to find where to shift.
+      </p>
+      <div class="compare">
+        <figure>
+          <div class="frame landscape"><img src="media/bw-features-before.jpg" alt="Emir detail aligned on raw pixels, showing heavy ghosting"></div>
+          <figcaption><strong>Before</strong> &middot; aligned on raw pixels, zoomed on his hand and belt</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-features-after.jpg" alt="Emir detail aligned on gradient magnitude, sharp and clean"></div>
+          <figcaption><strong>After</strong> &middot; aligned on gradient magnitude, same crop</figcaption>
+        </figure>
+      </div>
+      <p>The same fix cleaned up <strong>ilemselga.tif</strong> as well.</p>
+
+      <h3 id="bw-contrast">Auto contrast</h3>
+      <p>
+        Many of the aligned photos do not use the full range of brightness values, so they look a
+        little washed out. The fix is to stretch intensities so a dark percentile maps to 0 and a
+        bright percentile maps to 1 (I use percentiles instead of the literal darkest and brightest
+        pixel, so one dust speck or scratch does not set the whole scale).
+      </p>
+      <p>
+        My first attempt stretched all three channels together using one shared range. It barely
+        changed anything, because most photos already touch close to black and white somewhere,
+        even if the bulk of the image looks flat. Stretching each channel on its own range, using a
+        wider percentile cutoff (5th to 95th instead of 0.5th to 99.5th), made a real difference.
+      </p>
+      <div class="compare-3">
+        <figure>
+          <div class="frame landscape"><img src="media/bw-contrast-before.jpg" alt="church.tif before contrast stretch"></div>
+          <figcaption><strong>Before</strong></figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-contrast-global.jpg" alt="church.tif with a shared, global contrast stretch"></div>
+          <figcaption><strong>Global stretch</strong> &middot; barely visible</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-contrast-after.jpg" alt="church.tif with a per-channel contrast stretch"></div>
+          <figcaption><strong>Per-channel stretch</strong> &middot; clearly better</figcaption>
+        </figure>
+      </div>
+
+      <h3 id="bw-whitebalance">Auto white balance</h3>
+      <p>
+        Some photos, like church.tif, have an obvious color cast: the sky, water, and even the white
+        church building all looked slightly purple. Measuring the average color of each channel
+        showed why: blue averaged 0.72, while red and green averaged around 0.51, a real and
+        consistent bias, not just an unlucky pixel.
+      </p>
+      <p>
+        I tried two fixes. Gray world assumes the average color in the photo should be neutral gray,
+        so it scales each channel to bring its mean in line with the others. White patch assumes the
+        brightest pixels should be white, so it scales channels to match at the high end. Gray world
+        worked well here. White patch barely changed anything, because the brightest pixels in this
+        photo are already-overexposed clouds, which are already close to white in every channel, so
+        there was nothing there for white patch to fix.
+      </p>
+      <div class="compare-3">
+        <figure>
+          <div class="frame landscape"><img src="media/bw-whitebalance-before.jpg" alt="church.tif before white balance"></div>
+          <figcaption><strong>Before</strong> &middot; purple cast</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-whitebalance-after.jpg" alt="church.tif after gray world white balance"></div>
+          <figcaption><strong>Gray world</strong> &middot; cast mostly gone</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-whitebalance-whitepatch.jpg" alt="church.tif after white patch white balance, nearly unchanged"></div>
+          <figcaption><strong>White patch</strong> &middot; almost no change</figcaption>
+        </figure>
+      </div>
+
+      <h3 id="bw-crop">Auto crop</h3>
+      <p>
+        Shifting channels with <code>np.roll</code> wraps a strip of pixels around from the opposite
+        edge, and the plates themselves often have their own white or black borders too, so almost
+        every aligned photo has a colorful strip around the edge. Instead of cropping a fixed margin,
+        I scan inward from each edge and look for where the local variation in brightness jumps up,
+        assuming a plain border has low variation and real photo content has more texture.
+      </p>
+      <p>
+        This worked cleanly on the left and right edges, which really are close to one solid color for
+        a stretch before the real photo starts. It worked much less well on the top and bottom edges.
+        On monastery.jpg, the very top row already has too much variation for a simple threshold to
+        treat it as "still border," since the sky right at the edge already has some texture from
+        clouds. Looking closer, the border on this photo is not even one color, it is a white strip,
+        then a black strip, then a colorful blend, before you reach the real sky. Switching from a
+        fixed brightness threshold to looking for the single biggest jump in variation helped a
+        little on every edge, but did not fully solve it.
+      </p>
+      <div class="compare">
+        <figure>
+          <div class="frame landscape"><img src="media/bw-crop-before.jpg" alt="monastery.jpg before auto crop, with a colored border"></div>
+          <figcaption><strong>Before</strong> &middot; colored border on all sides</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-crop-after.jpg" alt="monastery.jpg after auto crop, border mostly gone"></div>
+          <figcaption><strong>After</strong> &middot; smaller on every edge, not perfect on top and bottom</figcaption>
+        </figure>
+      </div>
+      <p>
+        I'm keeping this result and being upfront about the limit here, rather than tuning the
+        threshold by hand until this one photo looks clean. A proper fix would need to notice a
+        long run of low variation, not just the single biggest jump, which is a reasonable next
+        step if I revisit this.
+      </p>
+
+      <h3 id="bw-colormap">Better color mapping</h3>
+      <p>
+        There is no reason the red, green, and blue filters Prokudin-Gorskii used should line up
+        exactly with modern RGB. I tried histogram matching: instead of just matching each channel's
+        average brightness like white balance does, this matches the full distribution of pixel
+        values in red and green onto blue's distribution.
+      </p>
+      <p>
+        On church.tif this made the picture brighter overall, not more natural, because blue was
+        already the unusually bright channel to begin with, so matching red and green onto it just
+        pulled everything up to blue's level. A fairer version would match all three channels to
+        some compromise target instead of picking one real channel as the answer. I'm noting this as
+        a real limitation of the simple version rather than pretending it worked better than it did.
+      </p>
+      <div class="compare">
+        <figure>
+          <div class="frame landscape"><img src="media/bw-colormap-before.jpg" alt="church.tif before histogram-based color mapping"></div>
+          <figcaption><strong>Before</strong></figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/bw-colormap-after.jpg" alt="church.tif after histogram-based color mapping, overly bright"></div>
+          <figcaption><strong>After</strong> &middot; brighter, but washed out</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="versions" class="part">
+      <div class="part-heading">
+        <span class="part-number">04</span>
+        <h2>Version Notes</h2>
+      </div>
+      <p class="intro">
+        Two changes along the way were worth keeping a record of, since both came from a real bug or
+        a real limitation I ran into, not just tuning for its own sake.
+      </p>
+
+      <h3>Single-scale: adding a scoring margin</h3>
+      <p>
+        Early on, my single-scale search scored every candidate shift on the full image, wrapped
+        edges included. I added <code>margin = window + 5</code> and scored only the cropped interior,
+        <code>shifted[margin:-margin, margin:-margin]</code> against the same crop of the other
+        channel. This changed the chosen offset on cathedral.jpg and monastery.jpg (about 19 out of
+        255 in average pixel value between the two versions), and left tobolsk.jpg unchanged, since
+        its correct answer did not happen to depend on the wrapped edge.
+      </p>
+
+      <h3>Pyramid: widening the window and raising min_size</h3>
+      <p>
+        I moved the search window from 15 to 30 pixels, and the pyramid's stopping size (how small an
+        image gets before switching to brute force) from 200 to 400 pixels. This was a direct response
+        to church.tif, which came out badly misaligned at the old settings: the true shift was large
+        enough, and the coarsest level was blurred enough after extra rounds of downsampling, that the
+        search settled on the wrong answer well before it even reached full resolution. The new
+        settings fixed church.tif and changed tobolsk.jpg's result too, since a smaller
+        <code>min_size</code> used to force even that small jpg through one unnecessary round of the
+        pyramid; at 400, it now gets solved directly with a single, wider brute force search instead.
+        cathedral.jpg and monastery.jpg came out identical either way.
+      </p>
+      <div class="compare">
+        <figure>
+          <div class="frame landscape"><img src="media/pyramid-version-before.jpg" alt="church.tif with the old pyramid settings, badly misaligned"></div>
+          <figcaption><strong>Before</strong> &middot; window 15, min_size 200</figcaption>
+        </figure>
+        <figure>
+          <div class="frame landscape"><img src="media/pyramid-version-after.jpg" alt="church.tif with the new pyramid settings, aligned"></div>
+          <figcaption><strong>After</strong> &middot; window 30, min_size 400</figcaption>
+        </figure>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Project 1 &middot; Colorizing the Prokudin-Gorskii Photo Collection</p>
+  </footer>
+
+</body>
+</html>
