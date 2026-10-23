@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exploring Flow Models</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="hero">
+    <p class="eyebrow">Project 3 &middot; Flow Models</p>
+    <h1>Generating and Editing Images with Flow Matching</h1>
+    <p class="subtitle">In Part A, I use a pretrained flow model to denoise, generate, and edit images, and to make visual illusions. In Part B, I train small flow matching models on MNIST from scratch.</p>
+    <p class="byline">Lorraine Xu &middot; <a href="mailto:lorraine_xu@berkeley.edu">lorraine_xu@berkeley.edu</a></p>
+  </header>
+
+  <nav class="toc">
+    <a href="#a1">A1 Training and Sampling</a>
+    <a href="#a2">A2 Guidance</a>
+    <a href="#a3">A3 Creative Uses</a>
+    <a href="#abw">A Bells &amp; Whistles</a>
+    <a href="#b1">B1 Denoiser</a>
+    <a href="#b2">B2 Flow Matching</a>
+    <a href="#bbw">B Bells &amp; Whistles</a>
+    <a href="#learned">What I Learned</a>
+  </nav>
+
+  <main class="wide">
+
+    <!-- ===================== PART A: A1 ===================== -->
+    <section id="a1" class="part">
+      <p class="part-label">Part A &middot; Pretrained Model</p>
+      <div class="part-heading">
+        <span class="part-number">A1</span>
+        <h2>Visualizing Training and Sampling</h2>
+      </div>
+      <p class="intro">
+        Part A uses a pretrained model called PixNerd-XXL-P16-T2I. It makes 512 &times; 512 images
+        from a text prompt, and I did no training. The text prompt is turned into an embedding
+        with <code>model.encode(prompt)</code>, which is provided in the starter notebook.
+      </p>
+      <div class="note">
+        <strong>The setup.</strong> A clean image is x<sub>1</sub> and noise is x<sub>0</sub> = &epsilon;,
+        where &epsilon; comes from a standard Gaussian. The noisy image at time t is
+        x<sub>t</sub> = (1 - t) x<sub>0</sub> + t x<sub>1</sub>, so t = 0 is pure noise and t = 1
+        is the clean image. The model takes (x<sub>t</sub>, t, prompt) and predicts the velocity
+        x<sub>1</sub> - x<sub>0</sub>. To make an image, I start from noise and take Euler steps
+        along this velocity. Unless I say otherwise, I used the step size h = 0.02, the guidance
+        weight w = 7 (when guidance is used), and random seed 180. Everything ran in float32 on a
+        Tesla T4 GPU, and the peak GPU memory was about 11.5 GiB.
+      </div>
+
+      <ul class="sub-toc">
+        <li><a href="#a11">1.1 Noisy inputs</a></li>
+        <li><a href="#a12">1.2 Gaussian blur</a></li>
+        <li><a href="#a13">1.3 One-step denoising</a></li>
+        <li><a href="#a14">1.4 Visualizing velocity</a></li>
+        <li><a href="#a15">1.5 Euler sampling</a></li>
+        <li><a href="#a16">1.6 Generating from noise</a></li>
+      </ul>
+
+      <h3 id="a11">1.1 Constructing Noisy Training Inputs</h3>
+      <p>
+        I used a photo of a cake as my own image (not the Campanile). The starter code center-crops
+        it, resizes it to 512 &times; 512, and puts the RGB values in [-1, 1]. I sampled one noise
+        tensor &epsilon; and used the same one for all three times, t = 0.25, 0.50 and 0.75. I also
+        saved the original image, the noise and the noisy images for the later parts.
+      </p>
+<pre><code>def interpolate(image, noise, t):
+    return (1 - t) * noise + t * image</code></pre>
+      <p>
+        I checked both ends with asserts: <code>interpolate(image, noise, 0)</code> gives exactly the
+        noise, and <code>interpolate(image, noise, 1)</code> gives exactly the image.
+      </p>
+      <figure class="wide"><img src="media/a11_noisy.jpg" alt="Original cake photo and its noisy versions at t = 0.25, 0.5 and 0.75"><figcaption><strong>Original</strong>, then noisy images at <strong>t = 0.25, 0.50, 0.75</strong>. At t = 0.25 the cake is almost hidden, and at t = 0.75 it is mostly visible.</figcaption></figure>
+
+      <h3 id="a12">1.2 Classical Denoising (Gaussian Blur)</h3>
+      <p>
+        At time t the image is scaled down by t. If I divide by t, I get
+        x<sub>t</sub> / t = x<sub>1</sub> + ((1 - t) / t) &epsilon;. This brings the image back to its
+        normal brightness, but the noise is now multiplied by (1 - t) / t, which is 3 at t = 0.25, 1
+        at t = 0.5 and 1/3 at t = 0.75. Then I blur with
+        <code>torchvision.transforms.functional.gaussian_blur</code>. To pick &sigma;, I used the
+        sweep in the starter notebook. It tries &sigma; = 1, 2, 4, 8 and 16 (kernel size
+        6&sigma; + 1) and keeps the one with the lowest mean squared error to the clean image.
+      </p>
+      <table class="offsets">
+        <tr><th>Time t</th><th class="mono">Best &sigma;</th></tr>
+        <tr><td>0.25</td><td class="mono">8</td></tr>
+        <tr><td>0.50</td><td class="mono">4</td></tr>
+        <tr><td>0.75</td><td class="mono">1</td></tr>
+      </table>
+      <figure class="wide narrow"><img src="media/a12_blur_025.jpg" alt="Noisy image and blurred result at t = 0.25"><figcaption><strong>t = 0.25</strong>, &sigma; = 8</figcaption></figure>
+      <figure class="wide narrow"><img src="media/a12_blur_050.jpg" alt="Noisy image and blurred result at t = 0.5"><figcaption><strong>t = 0.50</strong>, &sigma; = 4</figcaption></figure>
+      <figure class="wide narrow"><img src="media/a12_blur_075.jpg" alt="Noisy image and blurred result at t = 0.75"><figcaption><strong>t = 0.75</strong>, &sigma; = 1</figcaption></figure>
+      <p>
+        Blur removes some of the noise, but it also removes real detail. The more noise there is, the
+        bigger &sigma; has to be, and the more blurry the result gets. At t = 0.25 and 0.5 the letters
+        on the cake are gone. Blur treats noise and detail the same way, since both are high frequency.
+      </p>
+
+      <h3 id="a13">1.3 One-Step Denoising</h3>
+      <p>
+        The model predicts a velocity, and it is not noise. If we move from x<sub>t</sub> straight to
+        t = 1 along the predicted velocity, we get
+        x&#770;<sub>1</sub> = x<sub>t</sub> + (1 - t) v<sub>&theta;</sub>(x<sub>t</sub>, t, c).
+        I used the prompt "a high quality photo" and <code>torch.no_grad()</code>.
+      </p>
+<pre><code>def one_step_denoise(x, t, condition, predict_velocity):
+    v = predict_velocity(x, t, condition)
+    return x + (1 - t) * v</code></pre>
+      <p>
+        I also checked that the velocity has the same shape, dtype and device as the image, and that
+        all its values are finite.
+      </p>
+      <figure class="wide"><img src="media/a13_onestep_025.jpg" alt="Original, noisy and one-step result at t = 0.25"><figcaption><strong>t = 0.25</strong>: original, noisy input, one-step estimate</figcaption></figure>
+      <figure class="wide"><img src="media/a13_onestep_050.jpg" alt="Original, noisy and one-step result at t = 0.5"><figcaption><strong>t = 0.50</strong>: original, noisy input, one-step estimate</figcaption></figure>
+      <figure class="wide"><img src="media/a13_onestep_075.jpg" alt="Original, noisy and one-step result at t = 0.75"><figcaption><strong>t = 0.75</strong>: original, noisy input, one-step estimate</figcaption></figure>
+      <p>
+        This is much better than blur. At t = 0.75 the result looks almost like the original. At t = 0.5
+        the cake and cherries are sharp, but the letters on the cake are rewritten in the wrong shapes.
+        At t = 0.25 the result is blurry. The cherries are in the right places, but the letters are
+        gone. When there is a lot of noise, one step can only guess an average of all the clean
+        images that could fit the noisy one, so the result is smooth.
+      </p>
+
+      <h3 id="a14">1.4 Visualizing Velocity</h3>
+      <p>
+        The predicted velocity is v&#770;<sub>t</sub> = v<sub>&theta;</sub>(x<sub>t</sub>, t, c), and the
+        ground truth is v<sub>gt</sub> = x<sub>1</sub> - &epsilon;. Multiplying by (1 - t), the update the
+        model wants to add is (1 - t) v&#770;<sub>t</sub>, and the update that would give back the
+        original image is (1 - t) v<sub>gt</sub> = x<sub>1</sub> - x<sub>t</sub>. For every pixel, the
+        error is the root mean square over the three color channels:
+        E<sub>t</sub> = sqrt(mean over RGB of [(1 - t)(v&#770;<sub>t</sub> - v<sub>gt</sub>)]<sup>2</sup>).
+        I computed this before any scaling or clipping.
+      </p>
+<pre><code>@torch.inference_mode()
+def velocity_diagnostics(x_t, t, clean_image, epsilon, condition, predict_velocity):
+    v_hat = predict_velocity(x_t, t, condition)
+    v_gt = clean_image - epsilon
+    predicted_update = (1 - t) * v_hat
+    ground_truth_update = (1 - t) * v_gt
+    error_map = ((predicted_update - ground_truth_update) ** 2).mean(dim=1).sqrt()
+    return predicted_update, ground_truth_update, error_map</code></pre>
+      <p>
+        The two updates use the same color scale for all three times, with zero shown as middle gray.
+        The error maps use one linear scale as well (the same <code>vmin</code> and <code>vmax</code>),
+        with the maximum taken over all three maps.
+      </p>
+      <div class="compare fit-row" style="grid-template-columns: 1fr 3fr;">
+        <figure><div class="frame fit"><img src="media/a14_original.jpg" alt="Original cake photo"></div><figcaption><strong>Original</strong> (shown once)</figcaption></figure>
+        <div></div>
+      </div>
+      <figure class="wide"><img src="media/a14_t025.jpg" alt="Noisy image, predicted update, ground truth update and error at t = 0.25"><figcaption><strong>t = 0.25</strong>: noisy image, predicted update, ground truth update, error</figcaption></figure>
+      <figure class="wide"><img src="media/a14_t050.jpg" alt="Noisy image, predicted update, ground truth update and error at t = 0.5"><figcaption><strong>t = 0.50</strong>: noisy image, predicted update, ground truth update, error</figcaption></figure>
+      <figure class="wide"><img src="media/a14_t075.jpg" alt="Noisy image, predicted update, ground truth update and error at t = 0.75"><figcaption><strong>t = 0.75</strong>: noisy image, predicted update, ground truth update, error</figcaption></figure>
+      <p>
+        At t = 0.25 the predicted update is smooth. It fills in the round cake shape and the cherries,
+        but not the frosting ridges or the letters, which the ground truth has. The error map is bright
+        on those exact places: frosting ridges, letters, cherry stems and the ribbon edges. The error is
+        small on smooth areas like the top of the cake. At t = 0.5 the prediction has more detail and the
+        error is lower. At t = 0.75 both updates are close to gray, since most of the image is already
+        there, and the error is small everywhere. Because the color scale is shared, the t = 0.75 maps
+        look the darkest.
+      </p>
+
+      <h3 id="a15">1.5 Iterative Denoising with Euler Sampling</h3>
+      <p>
+        One step is not enough when the input is very noisy. Instead, I take many small steps and ask
+        the model for a new velocity after each one: x<sub>t+h</sub> = x<sub>t</sub> + h v<sub>&theta;</sub>(x<sub>t</sub>, t, c).
+        My function uses h = 0.02. It shortens the last step so that the integration ends exactly at
+        t = 1, and it returns the final image along with the saved states (the start, every fifth update,
+        and the end). I keep the state in float32.
+      </p>
+<pre><code>@torch.inference_mode()
+def euler_sample(x_start, t_start, step_size, velocity):
+    x = x_start.to(torch.float32)
+    n = math.ceil((1 - t_start) / step_size - 1e-9)
+    states = [(float(t_start), x.clone())]
+    for i in range(n):
+        t = t_start + i * step_size
+        h = min(step_size, 1 - t)
+        x = x + h * velocity(x, t)
+        if i == n - 1:
+            t_next = 1.0
+        else:
+            t_next = t_start + (i + 1) * step_size
+        if (i + 1) % 5 == 0 or i == n - 1:
+            states.append((float(t_next), x.clone()))
+    return x, states</code></pre>
+      <p>
+        <strong>Test with a constant velocity.</strong> I used a velocity field that is 1 everywhere, so the
+        answer is known: starting from 0, the result must be 1 - t<sub>start</sub> at the end. I counted
+        the velocity calls and checked the final time and value.
+      </p>
+      <table class="offsets">
+        <tr><th>Start time</th><th class="mono">Step size</th><th class="mono">Velocity calls</th><th class="mono">Result</th></tr>
+        <tr><td>0</td><td class="mono">0.02</td><td class="mono">50</td><td>Ends at t = 1, value 1</td></tr>
+        <tr><td>0.5</td><td class="mono">0.02</td><td class="mono">25</td><td>Ends at t = 1, value 0.5</td></tr>
+        <tr><td>0.93</td><td class="mono">0.02</td><td class="mono">4 (last step is 0.01)</td><td>Ends at t = 1, value 0.07</td></tr>
+      </table>
+      <p>
+        The 0.93 case checks the shortened final step: three steps of 0.02 get to 0.99, and the last
+        step is only 0.01.
+      </p>
+      <p>
+        <strong>Denoising from t = 0.5.</strong> I started from the saved t = 0.5 noisy image and ran 25
+        Euler updates. The figure shows the start, every fifth update, and the final image.
+      </p>
+      <figure class="wide narrow"><img src="media/a15_trajectory.jpg" alt="Euler sampling states from t = 0.5 to t = 1.0"><figcaption>Euler sampling from <strong>t = 0.50</strong> to <strong>t = 1.00</strong>, showing every fifth update</figcaption></figure>
+      <p>
+        <strong>Comparison.</strong> All four results below come from the same noisy input at t = 0.5.
+      </p>
+      <figure class="wide"><img src="media/a15_comparison.jpg" alt="Original, blur, one-step and Euler results"><figcaption>Original, Gaussian blur (&sigma; = 4), one-step estimate, and Euler sampling</figcaption></figure>
+      <table class="offsets">
+        <tr><th>Method</th><th class="mono">Mean squared error to the original</th></tr>
+        <tr><td>Gaussian blur</td><td class="mono">0.0416</td></tr>
+        <tr><td>One step</td><td class="mono">0.0198</td></tr>
+        <tr><td>Euler (25 steps)</td><td class="mono">0.0238</td></tr>
+      </table>
+      <p>
+        Blur is clearly the worst: it is much blurrier and has a high error. The one-step and Euler
+        results are both sharp. Euler has a slightly higher error, but I think it looks better.
+        It keeps small details like the ribbon and the frosting, while the one-step result is a little
+        smooth. Euler also commits to its own version of the letters, which is why the error is not lower.
+        So the error is not a perfect measure here, because a sharp image with different details can
+        score worse than a smooth image.
+      </p>
+
+      <h3 id="a16">1.6 Generating Images from Noise</h3>
+      <p>
+        I called <code>euler_sample</code> with <code>t_start = 0</code> and random noise as the starting
+        point (50 Euler steps), with the prompt "a high quality photo". The seeds are 180, 181, 182, 183
+        and 184.
+      </p>
+      <figure class="wide"><img src="media/a16_samples.jpg" alt="Five images generated from noise without guidance"><figcaption>Five samples from noise, seeds 180 to 184, no guidance</figcaption></figure>
+      <p>
+        <strong>Subject bias.</strong> All five images are portraits of a single person, even though the
+        prompt only says "a high quality photo". The pictures are close-ups of the face or upper body
+        with a plain background. The image quality is also low without guidance: seed 180 has no face,
+        seed 181 has strange skin on the body, and seed 183 has a warped face. Seeds 182 and 184 look the
+        best. So the model seems to treat "a high quality photo" as "a portrait of a person".
+      </p>
+    </section>
+
+    <!-- ===================== A2 ===================== -->
+    <section id="a2" class="part">
+      <div class="part-heading">
+        <span class="part-number">A2</span>
+        <h2>Conditional Generation and Guidance</h2>
+      </div>
+
+      <h3 id="a21">2.1 Classifier-Free Guidance</h3>
+      <p>
+        For classifier-free guidance, I predict the velocity twice at the same x and t: once with the prompt
+        (v<sub>c</sub>) and once with the empty prompt (v<sub>u</sub>). Then I push away from the empty
+        prediction: v<sub>cfg</sub> = v<sub>c</sub> + w (v<sub>c</sub> - v<sub>u</sub>). I used w = 7 and
+        h = 0.02. Setting w = 0 should return the normal prompted prediction, and I checked that with
+        <code>torch.equal</code>.
+      </p>
+<pre><code>@torch.no_grad()
+def cfg_velocity(x, t, condition, w, predict_velocity, null_condition=''):
+    v_c = predict_velocity(x, t, condition)
+    v_u = predict_velocity(x, t, null_condition)
+    return v_c + w * (v_c - v_u)</code></pre>
+      <figure class="wide"><img src="media/a21_cfg.jpg" alt="Five images generated with classifier-free guidance"><figcaption>Five samples with guidance (w = 7), seeds 180 to 184, the same noises as 1.6</figcaption></figure>
+      <p>
+        <strong>Comparison with 1.6.</strong> With guidance, the faces look normal and clean, the skin looks
+        like real skin, and the images are sharper. The weird shapes in seeds 180, 181 and 183 are gone.
+        The image from seed 182 keeps the same pose as before (a hand on the cheek), but the other seeds
+        change a lot, so the noise does not fix the whole picture. All five are still portraits of a
+        person, so guidance fixes the quality but not the bias toward portraits.
+      </p>
+    </section>
+
+    <!-- ===================== A3 ===================== -->
+    <section id="a3" class="part">
+      <div class="part-heading">
+        <span class="part-number">A3</span>
+        <h2>Creative Applications</h2>
+      </div>
+      <p class="intro">
+        In this part I use h = 0.02, w = 7 and the empty prompt for the unconditional branch.
+      </p>
+      <ul class="sub-toc">
+        <li><a href="#a31">3.1 Image-to-image editing</a></li>
+        <li><a href="#a32">3.2 Text-guided editing</a></li>
+        <li><a href="#a33">3.3 Visual anagrams</a></li>
+        <li><a href="#a34">3.4 Hybrid images</a></li>
+      </ul>
+
+      <h3 id="a31">3.1 Image-to-Image Editing</h3>
+      <p>
+        To edit a real image, I add a small amount of noise to it and then denoise it with the prompt.
+        The noisy start is (1 - t<sub>start</sub>) &epsilon; + t<sub>start</sub> x<sub>1</sub>, and I
+        integrate from t<sub>start</sub> to 1 with guidance. A small t<sub>start</sub> means a lot of noise,
+        so the model changes the image more. The seven starting times are 0.02, 0.04, 0.06, 0.10, 0.14,
+        0.25 and 0.50, and the prompt is "a high quality photo". The same noise (seed 180) is used for all
+        of them.
+      </p>
+<pre><code>def edit(image, noise, t_start, condition, predict_velocity, w=7, step_size=0.02):
+    x_start = interpolate(image, noise, t_start)
+
+    def velocity(x, t):
+        return cfg_velocity(x, t, condition, w, predict_velocity, null_condition)
+
+    result, _ = euler_sample(x_start, t_start, step_size, velocity)
+    return result</code></pre>
+
+      <h4>The Campanile</h4>
+      <figure class="wide"><img src="media/a31_edit_campanile.jpg" alt="Campanile edited at seven starting times"><figcaption>Campanile: original, then t = 0.02, 0.04, 0.06, 0.10, 0.14, 0.25, 0.50</figcaption></figure>
+      <p>
+        At t = 0.02, 0.04 and 0.06 the tower is lost and the result is a smooth white shape with no windows
+        or bricks. At 0.10 and 0.14 it is a plain tower with one window. At 0.25 the arched windows come back, and at 0.50 the brick
+        lines and the clock are almost the same as in the original.
+      </p>
+
+      <h4>My own images</h4>
+      <figure class="wide"><img src="media/a31_edit_my1.jpg" alt="Cake photo edited at seven starting times"><figcaption>My image 1 (cake): original, then t = 0.02 to 0.50</figcaption></figure>
+      <p>
+        The cake changes into something else when t is small: a device held in a hand (0.02 to 0.06) and a
+        blurry purple shape in a hand (0.10 and 0.14). At 0.25 it is a cake again with the same cherries, but
+        the letters are broken. At 0.50 it is close to the original.
+      </p>
+      <figure class="wide"><img src="media/a31_edit_my2.jpg" alt="Brick building photo edited at seven starting times"><figcaption>My image 2 (brick building): original, then t = 0.02 to 0.50</figcaption></figure>
+      <p>
+        The building turns into portraits of people (0.02, 0.04, 0.06), then a gray concrete building with
+        trees (0.10 and 0.14). At 0.25 it is a brick building again but with many changed details, and at
+        0.50 it is close to the original.
+      </p>
+
+      <h4>A web image and two drawings</h4>
+      <p>
+        The web image is a portrait photo I downloaded. The drawings are my own and are drawn in the center of
+        a square canvas: a slice of toast and a candle.
+      </p>
+      <figure class="wide"><img src="media/a31_web.jpg" alt="Web portrait edited at seven starting times"><figcaption>Web image (portrait): original, then t = 0.02 to 0.50</figcaption></figure>
+      <p>
+        At 0.02 and 0.04 it is a different person. From 0.06 it is the same face with small changes to the
+        eyes, hair and skin. By 0.50 it is almost the same image.
+      </p>
+      <figure class="wide"><img src="media/a31_drawing1.jpg" alt="Toast drawing edited at seven starting times"><figcaption>Drawing 1 (toast): original, then t = 0.02 to 0.50</figcaption></figure>
+      <figure class="wide"><img src="media/a31_drawing2.jpg" alt="Candle drawing edited at seven starting times"><figcaption>Drawing 2 (candle): original, then t = 0.02 to 0.50</figcaption></figure>
+      <p>
+        For the drawings, almost nothing changes from t = 0.06 or 0.10 on, since the lines are simple on a
+        white background and the model mostly redraws them. At t = 0.02 they change completely: the toast
+        becomes a black letter shape and the candle becomes a photo of a person standing in a room.
+        At 0.04 the toast becomes a rounded 3D loaf and the candle flame becomes a dome.
+      </p>
+
+      <h3 id="a32">3.2 Text-Guided Image Editing</h3>
+      <p>
+        This is the same as 3.1, but I replace "a high quality photo" with a prompt that describes the edit
+        I want. The seven starting times are the same.
+      </p>
+      <figure class="wide"><img src="media/a32_text_campanile.jpg" alt="Campanile edited with the lighthouse prompt"><figcaption>Campanile, prompt: "a photo of a lighthouse on a rocky coast"</figcaption></figure>
+      <p>
+        Small starting times give real lighthouses by the sea. From 0.06 to 0.14 the tower becomes a plain white
+        lighthouse with rocks at the bottom, which is the nicest edit since it keeps the shape. At 0.25 only
+        the top looks like a lantern room, and at 0.50 it is almost the original.
+      </p>
+      <figure class="wide"><img src="media/a32_text_my1.jpg" alt="Cake photo edited with the pizza prompt"><figcaption>My image 1 (cake), prompt: "a photo of a round pizza"</figcaption></figure>
+      <p>
+        At 0.02 and 0.04 it is a regular pizza with only a hint of the cake. At 0.10 and 0.14 the result is
+        a pizza with purple topping and red round toppings exactly where the cherries were, so it keeps the
+        layout of the cake. At 0.25 the cake is back with a pizza-like crust, and at 0.50 it is mostly the original.
+      </p>
+      <figure class="wide"><img src="media/a32_text_my2.jpg" alt="Brick building photo edited with the oil painting prompt"><figcaption>My image 2 (brick building), prompt: "an oil painting of a church"</figcaption></figure>
+      <p>
+        From 0.02 to 0.14 the building becomes an oil painting of a church with towers and arched windows. At 0.25
+        and 0.50 it is an oil painted version of the same building, so the painting style stays but the shape
+        of the building comes back.
+      </p>
+
+      <h3 id="a33">3.3 Visual Anagrams</h3>
+      <p>
+        A visual anagram is one image that shows two different pictures, depending on whether it is upright or
+        rotated by 180 degrees. At every step, I get a guided velocity for the upright image with prompt p<sub>1</sub>.
+        I also rotate the image, get a guided velocity with prompt p<sub>2</sub>, and rotate that velocity back.
+        The average of the two is used for the Euler step.
+      </p>
+<pre><code>def rotate180(x):
+    return torch.flip(x, (-2, -1))
+
+
+def visual_anagrams(noise, condition_a, condition_b, predict_velocity, w=7, step_size=0.02):
+    def velocity(x, t):
+        v_a = cfg_velocity(x, t, condition_a, w, predict_velocity, null_condition)
+        v_b = rotate180(cfg_velocity(rotate180(x), t, condition_b, w, predict_velocity, null_condition))
+        return (v_a + v_b) / 2
+
+    result, _ = euler_sample(noise, 0, step_size, velocity)
+    return result</code></pre>
+      <p>
+        I made two illusions. Each figure shows the image upright (left, first prompt) and rotated by 180
+        degrees (right, second prompt).
+      </p>
+      <figure class="wide narrow"><img src="media/a33_oldman.jpg" alt="Visual anagram of an old man and people around a campfire"><figcaption>"an oil painting of an old man" (upright) and "an oil painting of people around a campfire" (rotated), seed 180</figcaption></figure>
+      <figure class="wide narrow"><img src="media/a33_village.jpg" alt="Visual anagram of a snowy mountain village and a horse"><figcaption>"a lithograph of a snowy mountain village" (upright) and "a lithograph of a horse" (rotated), seed 181</figcaption></figure>
+      <p>
+        Both subjects can be recognized in each illusion. In the first one the old man's face is a bit odd, and
+        in the second one a piece of the horse (the eye) shows up in the village view. I used the example prompts
+        from the starter notebook, and they worked with the first seeds I tried.
+      </p>
+
+      <h3 id="a34">3.4 Hybrid Images</h3>
+      <p>
+        A hybrid image shows one picture from far away and another up close. At each step I predict two guided
+        velocities from the same image, one for each prompt. I keep the low frequencies of the first
+        (distant) one and the high frequencies of the second (close) one:
+        v = lowpass(v<sub>1</sub>) + v<sub>2</sub> - lowpass(v<sub>2</sub>). The low-pass filter is a Gaussian blur
+        with kernel size 265 and &sigma; = 16.
+      </p>
+<pre><code>def lowpass(x, sigma=16.0):
+    kernel = 2 * round(16.5 * x.shape[-1] / 64) + 1
+    return gaussian_blur(x, [kernel, kernel], [sigma, sigma])
+
+
+def make_hybrids(noise, condition_a, condition_b, predict_velocity, w=7, step_size=0.02):
+    def velocity(x, t):
+        v_a = cfg_velocity(x, t, condition_a, w, predict_velocity, null_condition)
+        v_b = cfg_velocity(x, t, condition_b, w, predict_velocity, null_condition)
+        return lowpass(v_a) + v_b - lowpass(v_b)
+
+    result, _ = euler_sample(noise, 0, step_size, velocity)
+    return result</code></pre>
+      <p>
+        For each hybrid I show the full size image (what you see close up) and a 64 &times; 64 version
+        (what you see from far away). The 64 &times; 64 images are shown at their real size.
+      </p>
+
+      <h4>Hybrid 1: skull (far) and forest (close), seed 182</h4>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/a34_forest182.jpg" alt="Hybrid image, full size, looks like a forest"></div><figcaption><strong>Full size</strong>, close prompt: "a lithograph of a forest"</figcaption></figure>
+        <figure><div class="frame tiny"><img src="media/a34_forest182_small.png" alt="Hybrid image reduced to 64 by 64, looks like a skull"></div><figcaption><strong>Reduced to 64 &times; 64</strong>, distant prompt: "a lithograph of a skull"</figcaption></figure>
+      </div>
+
+      <h4>Hybrid 2: skull (far) and waterfall (close), seed 182</h4>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/a34_water182.jpg" alt="Hybrid image, full size, looks like a waterfall"></div><figcaption><strong>Full size</strong>, close prompt: "a lithograph of a waterfall"</figcaption></figure>
+        <figure><div class="frame tiny"><img src="media/a34_water182_small.png" alt="Hybrid image reduced to 64 by 64, looks like a skull"></div><figcaption><strong>Reduced to 64 &times; 64</strong>, distant prompt: "a lithograph of a skull"</figcaption></figure>
+      </div>
+      <p>
+        These two worked well. In the small version of the forest hybrid the trees turn into the eye sockets and
+        the nose of a skull, and in the waterfall one the round outline and the dark areas look like a skull.
+        Hybrids depend a lot on the seed, so here are the other seed I tried (183) for comparison. Its
+        far version is more like a round head than a skull, so I did not choose it.
+      </p>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/a34_forest183.jpg" alt="Forest hybrid with seed 183, full size"></div><figcaption>Forest, seed 183, full size</figcaption></figure>
+        <figure><div class="frame tiny"><img src="media/a34_forest183_small.png" alt="Forest hybrid with seed 183 reduced to 64 by 64"></div><figcaption>Forest, seed 183, 64 &times; 64</figcaption></figure>
+      </div>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/a34_water183.jpg" alt="Waterfall hybrid with seed 183, full size"></div><figcaption>Waterfall, seed 183, full size</figcaption></figure>
+        <figure><div class="frame tiny"><img src="media/a34_water183_small.png" alt="Waterfall hybrid with seed 183 reduced to 64 by 64"></div><figcaption>Waterfall, seed 183, 64 &times; 64</figcaption></figure>
+      </div>
+    </section>
+
+    <!-- ===================== A BELLS AND WHISTLES ===================== -->
+    <section id="abw" class="part">
+      <div class="part-heading">
+        <span class="part-number">A+</span>
+        <h2>Bells &amp; Whistles for Part A</h2>
+      </div>
+      <ul class="sub-toc">
+        <li><a href="#abw-anagrams">Anagrams with other transformations</a></li>
+        <li><a href="#abw-logo">Course logo</a></li>
+      </ul>
+
+      <h3 id="abw-anagrams">Visual Anagrams with Two Other Transformations</h3>
+      <p>
+        The anagram idea works for any transformation that can be undone exactly and that keeps Gaussian noise
+        Gaussian. For each view, I apply the transformation to the current image, predict the velocity for that
+        view's prompt, and undo the transformation before averaging. I tried two transformations from the
+        Visual Anagrams paper: a 90 degree rotation and a negative (flipping the sign of every pixel).
+      </p>
+<pre><code>def transformed_anagram(noise, condition_a, condition_b, view, inverse_view, predict_velocity, w=7, step_size=0.02):
+    def velocity(x, t):
+        v_a = cfg_velocity(x, t, condition_a, w, predict_velocity, null_condition)
+        v_b = inverse_view(cfg_velocity(view(x), t, condition_b, w, predict_velocity, null_condition))
+        return (v_a + v_b) / 2
+
+    result, _ = euler_sample(noise, 0, step_size, velocity)
+    return result
+
+
+def rotate90(x):
+    return torch.rot90(x, 1, (-2, -1))
+
+
+def rotate90_inverse(x):
+    return torch.rot90(x, -1, (-2, -1))
+
+
+def negate(x):
+    return -x</code></pre>
+      <p>
+        I checked that <code>rotate90_inverse(rotate90(x))</code> and <code>negate(negate(x))</code> both give
+        back x exactly.
+      </p>
+
+      <h4>90 degree rotation: tall tree and fish</h4>
+      <p>
+        A tree is tall and a fish is wide, so rotating by a quarter turn is a natural way to swap them. Seed 180 worked
+        well. The left side is the upright image and the right side is the image rotated by 90 degrees.
+      </p>
+      <figure class="wide narrow"><img src="media/abw_rot_180.jpg" alt="Upright tree that looks like a fish when rotated by 90 degrees"><figcaption>"a drawing of a tall tree" (upright) and "a drawing of a fish" (rotated by 90 degrees), seed 180</figcaption></figure>
+      <p>Seeds 181 and 182 for the same pair gave fainter drawings, but the idea is still visible:</p>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/abw_rot_181.jpg" alt="Rotation anagram with seed 181"></div><figcaption>Seed 181</figcaption></figure>
+        <figure><div class="frame fit"><img src="media/abw_rot_182.jpg" alt="Rotation anagram with seed 182"></div><figcaption>Seed 182</figcaption></figure>
+      </div>
+
+      <h4>Negative: snowy village and horse</h4>
+      <p>
+        For the negative, the second picture appears when the colors are inverted (dark becomes light). Here the
+        left is the normal image, and the right is the negative. The pair "a lithograph of a snowy mountain
+        village" and "a lithograph of a horse" worked in all three seeds I tried. Seed 181 gave the cleanest
+        horse, so that is my main result.
+      </p>
+      <figure class="wide narrow"><img src="media/abw_neg_village_181.jpg" alt="Negative anagram of a snowy village and a horse, seed 181"><figcaption>"a lithograph of a snowy mountain village" and, in the negative, "a lithograph of a horse", seed 181</figcaption></figure>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/abw_neg_village_180.jpg" alt="Negative anagram, village and horse, seed 180"></div><figcaption>Seed 180</figcaption></figure>
+        <figure><div class="frame fit"><img src="media/abw_neg_village_182.jpg" alt="Negative anagram, village and horse, seed 182"></div><figcaption>Seed 182</figcaption></figure>
+      </div>
+      <p>
+        I also tried "an oil painting of a vase of flowers" and, in the negative, "an oil painting of a woman's face".
+        The seed 180 result is a good one, with a face that appears when the colors are inverted. The other two seeds
+        are blurrier.
+      </p>
+      <div class="compare-3">
+        <figure><div class="frame fit"><img src="media/abw_neg_vase_180.jpg" alt="Vase and face negative anagram, seed 180"></div><figcaption>Seed 180</figcaption></figure>
+        <figure><div class="frame fit"><img src="media/abw_neg_vase_181.jpg" alt="Vase and face negative anagram, seed 181"></div><figcaption>Seed 181</figcaption></figure>
+        <figure><div class="frame fit"><img src="media/abw_neg_vase_182.jpg" alt="Vase and face negative anagram, seed 182"></div><figcaption>Seed 182</figcaption></figure>
+      </div>
+
+      <h3 id="abw-logo">Course Logo</h3>
+      <p>
+        For the course logo, I used the UC Berkeley logo as the input image (the seal and the name) and applied
+        text-guided editing from 3.2. I used smaller starting times than before, from 0.05 to 0.25, because
+        the logo has a lot of fixed structure. I tried two prompts. The first one, "a blue and gold logo with a
+        camera lens in the center", turns the seal into plain rings at small times.
+      </p>
+      <figure class="wide"><img src="media/abw_logo_lens.jpg" alt="Berkeley logo edited with the camera lens prompt at five starting times"><figcaption>Prompt: "a blue and gold logo with a camera lens in the center", t = 0.05, 0.10, 0.15, 0.20, 0.25</figcaption></figure>
+      <p>
+        The second prompt, "a blue and gold seal with a camera", worked better. A camera replaces the book in
+        the middle, and the seal stays recognizable. At t = 0.05 the word "Berkeley" is destroyed, so I did not
+        use that time.
+      </p>
+      <figure class="wide"><img src="media/abw_logo_seal.jpg" alt="Berkeley logo edited with the seal and camera prompt at five starting times"><figcaption>Prompt: "a blue and gold seal with a camera", t = 0.05, 0.10, 0.15, 0.20, 0.25</figcaption></figure>
+      <p>
+        I picked t = 0.15 and tried four seeds. Seed 181 gives my final logo: the camera in the center has a
+        clear lens and a clean body. The ring of letters around the seal gets scrambled, which is normal for this
+        model, since it cannot write text well.
+      </p>
+      <figure class="wide"><img src="media/abw_logo_seeds.jpg" alt="Berkeley logo edited with four seeds at t = 0.15"><figcaption>Prompt: "a blue and gold seal with a camera", t = 0.15, seeds 180 to 183 (final logo: seed 181)</figcaption></figure>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ===================== PART B: B1 ===================== -->
+    <section id="b1" class="part">
+      <p class="part-label">Part B &middot; Training from Scratch</p>
+      <div class="part-heading">
+        <span class="part-number">B1</span>
+        <h2>A Single-Step Denoising UNet</h2>
+      </div>
+      <p class="intro">
+        In Part B, I build and train UNets on MNIST digits (28 &times; 28, pixel values in [0, 1]). Everything uses
+        PyTorch, the Adam optimizer, a mean squared error loss, and seed 180, on a Tesla T4 GPU.
+      </p>
+      <ul class="sub-toc">
+        <li><a href="#b11">1.1 The UNet</a></li>
+        <li><a href="#b121">1.2.1 Training</a></li>
+        <li><a href="#b122">1.2.2 Other noise levels</a></li>
+        <li><a href="#b123">1.2.3 Pure noise</a></li>
+      </ul>
+
+      <h3 id="b11">1.1 Implementing the UNet</h3>
+      <p>
+        The UNet has a number of hidden channels D. First, here are the small building blocks. Every convolution
+        is followed by batch norm and GELU.
+      </p>
+      <ul class="plain">
+        <li><strong>Conv:</strong> 3 &times; 3 convolution, stride 1, padding 1. It changes the number of channels and keeps the size.</li>
+        <li><strong>DownConv:</strong> 3 &times; 3 convolution with stride 2. It halves the height and width.</li>
+        <li><strong>UpConv:</strong> transposed convolution with a 4 &times; 4 kernel and stride 2. It doubles the height and width.</li>
+        <li><strong>Flatten:</strong> average pooling over 7 &times; 7, then GELU. It turns 7 &times; 7 into 1 &times; 1.</li>
+        <li><strong>Unflatten:</strong> transposed convolution with a 7 &times; 7 kernel and stride 7. It turns 1 &times; 1 back into 7 &times; 7.</li>
+        <li><strong>ConvBlock, DownBlock, UpBlock:</strong> two Convs; a DownConv plus a ConvBlock; and an UpConv plus a ConvBlock.</li>
+      </ul>
+
+      <p>
+        The full network goes down twice (28 to 14 to 7), squeezes to a single pixel, and then goes back up. At
+        each step on the way up, I concatenate the feature map from the same size on the way down (a skip
+        connection) along the channel axis.
+      </p>
+      <table class="offsets">
+        <tr><th>Step</th><th class="mono">Output shape</th></tr>
+        <tr><td>Input</td><td class="mono">1 &times; 28 &times; 28</td></tr>
+        <tr><td>conv0 (ConvBlock)</td><td class="mono">D &times; 28 &times; 28</td></tr>
+        <tr><td>down1 (DownBlock)</td><td class="mono">D &times; 14 &times; 14</td></tr>
+        <tr><td>down2 (DownBlock)</td><td class="mono">2D &times; 7 &times; 7</td></tr>
+        <tr><td>flatten</td><td class="mono">2D &times; 1 &times; 1</td></tr>
+        <tr><td>unflatten</td><td class="mono">2D &times; 7 &times; 7</td></tr>
+        <tr><td>up1 (input: unflatten and down2 joined, 4D channels)</td><td class="mono">D &times; 14 &times; 14</td></tr>
+        <tr><td>up2 (input: up1 and down1 joined, 2D channels)</td><td class="mono">D &times; 28 &times; 28</td></tr>
+        <tr><td>conv1 (input: up2 and conv0 joined, 2D channels)</td><td class="mono">D &times; 28 &times; 28</td></tr>
+        <tr><td>Final 3 &times; 3 conv</td><td class="mono">1 &times; 28 &times; 28</td></tr>
+      </table>
+
+
+      <h3 id="b121">1.2.1 Training the Denoiser</h3>
+      <p>
+        The denoiser takes a noisy digit z = x + &sigma; &epsilon; and tries to return the clean digit x, with the
+        loss L = E ||D<sub>&theta;</sub>(z) - x||<sup>2</sup>. First, here is what the noising looks like for
+        &sigma; = 0.0, 0.2, 0.4, 0.5, 0.6, 0.8 and 1.0 on five test digits (each row is one digit).
+      </p>
+      <figure class="wide narrow"><img src="media/b12_noising.png" alt="MNIST digits with noise levels from 0 to 1"><figcaption>Noising process, &sigma; = 0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0 (left to right)</figcaption></figure>
+      <p>
+        I trained a UNet with D = 128 to remove noise at &sigma; = 0.5. The settings are: batch size 256, Adam
+        with learning rate 1e-4, 5 epochs, and shuffled training data. The noise is added to each batch after it
+        is loaded, so every epoch sees new noise on the same digits.
+      </p>
+<pre><code>model = UnconditionalUNet(1, hidden_dim).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+criterion = nn.MSELoss()
+
+train_losses = []
+for epoch in range(num_epochs):
+    for i, (images, _) in enumerate(tqdm(train_loader)):
+        images = images.to(device)
+        noisy = images + noise_level * torch.randn_like(images)
+        outputs = model(noisy)
+
+        loss = criterion(outputs, images)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        train_losses.append(loss.item())</code></pre>
+      <figure class="wide narrow"><img src="media/b121_loss.png" alt="Training loss curve of the denoiser"><figcaption>Training loss (the orange line is a moving average)</figcaption></figure>
+      <p>
+        The loss drops quickly in the first few hundred steps and then goes down slowly. These are results on the
+        first eight test digits at &sigma; = 0.5. Each figure has three rows: the clean digit, the noisy digit and
+        the denoised digit.
+      </p>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/b121_epoch1.png" alt="Denoising results after epoch 1"></div><figcaption><strong>After epoch 1</strong></figcaption></figure>
+        <figure><div class="frame fit"><img src="media/b121_epoch5.png" alt="Denoising results after epoch 5"></div><figcaption><strong>After epoch 5</strong></figcaption></figure>
+      </div>
+      <p>
+        The model already works well after one epoch. After five epochs the strokes are a little smoother and
+        sharper, and the digits are close to the clean ones.
+      </p>
+
+      <h3 id="b122">1.2.2 Out-of-Distribution Testing</h3>
+      <p>
+        The model was trained only at &sigma; = 0.5. Here I test it on other noise levels, using the same test
+        digits and the same noise pattern, scaled by each &sigma;. Rows alternate between the noisy digit and the
+        denoised digit, for two digits.
+      </p>
+      <figure class="wide narrow"><img src="media/b122_ood.png" alt="Denoiser results for sigma from 0 to 1"><figcaption>&sigma; = 0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0 (left to right), noisy and then denoised</figcaption></figure>
+      <p>
+        It does well from &sigma; = 0 up to about 0.6. With no noise it just gives back the digit, and at lower
+        levels like 0.2 and 0.4 it still works even though it never saw them. At &sigma; = 0.8 and 1.0 the results
+        break down: there are leftover marks and parts of the stroke are damaged, since the noise is stronger than
+        anything the model saw in training.
+      </p>
+
+      <h3 id="b123">1.2.3 Denoising Pure Noise</h3>
+      <p>
+        Now the input is pure Gaussian noise (z = &epsilon;) and the target is still a clean digit. I trained a new
+        D = 128 UNet in the same way: 5 epochs, Adam with learning rate 1e-4, and batch size 256. I fed it new
+        random noise to see the output.
+      </p>
+      <figure class="wide narrow"><img src="media/b123_loss.png" alt="Loss curve for the pure-noise denoiser"><figcaption>Training loss for the pure noise model</figcaption></figure>
+      <div class="compare fit-row">
+        <figure><div class="frame fit"><img src="media/b123_epoch1.png" alt="Pure noise outputs after epoch 1"></div><figcaption><strong>After epoch 1</strong></figcaption></figure>
+        <figure><div class="frame fit"><img src="media/b123_epoch5.png" alt="Pure noise outputs after epoch 5"></div><figcaption><strong>After epoch 5</strong></figcaption></figure>
+      </div>
+      <p>
+        <strong>What I see.</strong> All ten outputs look almost the same: a blurry white blob in the middle of
+        the image that is a bit like a digit, but not any single digit. It looks like an 8 or 0 mixed with parts of
+        other digits. There is no clear sharp stroke anywhere, and the result after epoch 5 is about the same as
+        after epoch 1.
+      </p>
+      <p>
+        <strong>Why.</strong> The input is pure noise, so it has no information about which digit we want. The model
+        has to give one answer for every input. With the mean squared error, the answer that gives the lowest
+        error is the average of all the training digits (the centroid). Every input gets this same average. The
+        mean image of the training set (below) looks like the outputs: a blurry shape that is thick in the
+        middle. It is brightest where most digits have ink, and it fades toward the edges. The loss curve
+        agrees: it drops fast and then stays flat, since the model quickly finds the average and cannot do better.
+      </p>
+      <figure class="wide narrow" style="max-width: 300px;"><img src="media/b123_mean.png" alt="Mean image of the MNIST training set"><figcaption>The average of all MNIST training digits</figcaption></figure>
+    </section>
+
+    <!-- ===================== B2 ===================== -->
+    <section id="b2" class="part">
+      <div class="part-heading">
+        <span class="part-number">B2</span>
+        <h2>Flow Matching</h2>
+      </div>
+      <p class="intro">
+        A single step from noise gives only the average digit, so instead I train a flow model that takes many
+        small steps. Here the noisy image is x<sub>t</sub> = (1 - t) x<sub>0</sub> + t x<sub>1</sub>, where
+        x<sub>0</sub> is Gaussian noise, x<sub>1</sub> is a clean digit and t is between 0 and 1. The target is
+        the velocity u(x<sub>t</sub>, t) = x<sub>1</sub> - x<sub>0</sub>, and the loss is
+        E ||(x<sub>1</sub> - x<sub>0</sub>) - u<sub>&theta;</sub>(x<sub>t</sub>, t)||<sup>2</sup>, with t drawn
+        uniformly from [0, 1].
+      </p>
+      <ul class="sub-toc">
+        <li><a href="#b21">2.1 Time-conditioned UNet</a></li>
+        <li><a href="#b22">2.2 Training</a></li>
+        <li><a href="#b23">2.3 Sampling</a></li>
+        <li><a href="#b24">2.4 Class conditioning</a></li>
+        <li><a href="#b25">2.5 Class-conditioned training</a></li>
+        <li><a href="#b26">2.6 Class-conditioned sampling</a></li>
+      </ul>
+
+      <h3 id="b21">2.1 Implementing a Time-Conditioned UNet</h3>
+      <p>
+        The network now also needs to know t. Because t is already between 0 and 1, I use it directly as a single
+        number. It goes through two small fully connected blocks (Linear, GELU, Linear): one makes 2D numbers (t<sub>1</sub>)
+        and one makes D numbers (t<sub>2</sub>). I multiply them into the feature maps in two places, replacing the
+        original layers: <code>unflatten = unflatten * t1</code> and <code>up1 = up1 * t2</code>.
+      </p>
+<pre><code>class FCBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(in_channels, out_channels),
+            nn.GELU(),
+            nn.Linear(out_channels, out_channels),
+        )
+
+    def forward(self, x):
+        return self.block(x)</code></pre>
+      <p>
+        The rest of the UNet is the same as before. The only new lines in <code>forward</code> are these:
+      </p>
+<pre><code>t = t.view(-1, 1).to(x.dtype)
+t1 = self.fc1_t(t).view(-1, 2 * self.D, 1, 1)
+t2 = self.fc2_t(t).view(-1, self.D, 1, 1)
+...
+unflat = self.unflatten(flat) * t1
+u1 = self.up1(torch.cat([unflat, d2], dim=1)) * t2</code></pre>
+      <p>
+        <strong>Training loss (Algorithm 1).</strong> For each batch I pick random noise x<sub>0</sub> and a random t
+        for every image, build x<sub>t</sub>, and compare the prediction with x<sub>1</sub> - x<sub>0</sub>.
+      </p>
+<pre><code>def time_fm_forward(unet, x_1, num_ts):
+    unet.train()
+    x_0 = torch.randn_like(x_1)
+    t = torch.rand(x_1.shape[0], device=x_1.device)
+    t_expanded = t.view(-1, 1, 1, 1)
+    x_t = (1 - t_expanded) * x_0 + t_expanded * x_1
+    pred = unet(x_t, t)
+    return F.mse_loss(pred, x_1 - x_0)</code></pre>
+      <p>
+        <strong>Sampling (Algorithm 2).</strong> I start from noise at t = 0 and take Euler steps of size 1 / num_ts
+        until t = 1. The function makes one image per call, and I set the seed for the noise.
+      </p>
+<pre><code>@torch.inference_mode()
+def time_fm_sample(unet, img_wh, num_ts, seed=0):
+    unet.eval()
+    dev = next(unet.parameters()).device
+    generator = torch.Generator(device=dev).manual_seed(seed)
+    x = torch.randn(1, 1, img_wh[0], img_wh[1], generator=generator, device=dev)
+    for i in range(num_ts):
+        t = torch.full((1,), i / num_ts, device=dev)
+        x = x + unet(x, t) / num_ts
+    return x</code></pre>
+
+      <h3 id="b22">2.2 Training the Time-Conditioned UNet</h3>
+      <p>
+        I trained a time-conditioned UNet with D = 64 for 10 epochs. The batch size is 64 and the optimizer is
+        Adam with an initial learning rate of 1e-2. An exponential learning rate scheduler multiplies the rate
+        by gamma = 0.1<sup>(1 / 10)</sup> after each epoch, so the rate falls to about one tenth by the end. I
+        saved the model after epochs 1, 5 and 10.
+      </p>
+<pre><code>time_unet = TimeConditionalUNet(1, 10, 64).to(device)
+time_fm = TimeConditionalFM(time_unet, num_ts=50).to(device)
+time_optimizer = torch.optim.Adam(time_fm.parameters(), lr=1e-2)
+time_scheduler = torch.optim.lr_scheduler.ExponentialLR(time_optimizer, gamma=0.1 ** (1.0 / 10))
+
+for epoch in range(10):
+    for images, _ in tqdm(time_loader):
+        images = images.to(device)
+        loss = time_fm(images)
+        time_optimizer.zero_grad()
+        loss.backward()
+        time_optimizer.step()
+        time_losses.append(loss.item())
+    time_scheduler.step()</code></pre>
+      <figure class="wide narrow"><img src="media/b22_loss.png" alt="Training loss of the time-conditioned UNet"><figcaption>Training loss of the time-conditioned UNet. It starts very high and then falls and stays low.</figcaption></figure>
+
+      <h3 id="b23">2.3 Sampling from the Time-Conditioned UNet</h3>
+      <p>
+        These are 40 samples from each saved model, with 50 Euler steps. The seeds are the same for each epoch
+        (0 to 39), so the same position in each figure starts from the same noise.
+      </p>
+      <figure class="wide"><img src="media/b23_epoch1.png" alt="Samples from the time-conditioned model after epoch 1"><figcaption><strong>Epoch 1</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b23_epoch5.png" alt="Samples from the time-conditioned model after epoch 5"><figcaption><strong>Epoch 5</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b23_epoch10.png" alt="Samples from the time-conditioned model after epoch 10"><figcaption><strong>Epoch 10</strong></figcaption></figure>
+      <p>
+        After one epoch the samples are only scribbles. By epoch 5 many look like digits, and by epoch 10 most of
+        them do (I can see 0, 1, 2, 3, 4, 5, 6, 8 and 9), but some are still wrong or hard to read. The model does
+        not know which digit to make, so it just makes something that looks like a digit.
+      </p>
+
+      <h3 id="b24">2.4 Implementing a Class-Conditioned UNet</h3>
+      <p>
+        To choose which digit to generate, I add the class c, a one-hot vector with 10 entries. It uses two more
+        fully connected blocks, so there are four in total: fc1_t and fc2_t for time, and fc1_c and fc2_c for
+        the class. The class and time features are combined as
+        <code>unflatten = c1 * unflatten + t1</code> and <code>up1 = c2 * up1 + t2</code>.
+        To get classifier-free guidance, I also train the model without the class: for 10% of the images in each batch,
+        the one-hot vector is set to all zeros (a <code>mask</code> of 0).
+      </p>
+<pre><code>c = F.one_hot(c, self.num_classes).to(x.dtype)
+if mask is not None:
+    c = c * mask.view(-1, 1).to(x.dtype)
+t = t.view(-1, 1).to(x.dtype)
+t1 = self.fc1_t(t).view(-1, 2 * self.D, 1, 1)
+c1 = self.fc1_c(c).view(-1, 2 * self.D, 1, 1)
+t2 = self.fc2_t(t).view(-1, self.D, 1, 1)
+c2 = self.fc2_c(c).view(-1, self.D, 1, 1)
+...
+unflat = c1 * self.unflatten(flat) + t1
+u1 = c2 * self.up1(torch.cat([unflat, d2], dim=1)) + t2</code></pre>
+      <p><strong>Training loss (Algorithm 3).</strong> It is the same as Algorithm 1, with the class and the random mask.</p>
+<pre><code>def class_fm_forward(unet, x_1, c, p_uncond, num_ts):
+    unet.train()
+    n = x_1.shape[0]
+    x_0 = torch.randn_like(x_1)
+    t = torch.rand(n, device=x_1.device)
+    t_expanded = t.view(-1, 1, 1, 1)
+    x_t = (1 - t_expanded) * x_0 + t_expanded * x_1
+    mask = (torch.rand(n, device=x_1.device) &gt;= p_uncond).float()
+    pred = unet(x_t, c, t, mask)
+    return F.mse_loss(pred, x_1 - x_0)</code></pre>
+      <p>
+        <strong>Sampling (Algorithm 4).</strong> At each step I get a velocity with the class (u<sub>c</sub>) and one
+        without it (u<sub>u</sub>), and use u = u<sub>u</sub> + &gamma; (u<sub>c</sub> - u<sub>u</sub>) with
+        &gamma; = 5. Note that this is different from Part A, where the guidance was v<sub>c</sub> + w (v<sub>c</sub> - v<sub>u</sub>).
+      </p>
+<pre><code>@torch.inference_mode()
+def class_fm_sample(unet, c, img_wh, num_ts, guidance_scale=5.0, seed=0):
+    unet.eval()
+    dev = next(unet.parameters()).device
+    c = c.to(dev)
+    n = c.shape[0]
+    generator = torch.Generator(device=dev).manual_seed(seed)
+    x = torch.randn(n, 1, img_wh[0], img_wh[1], generator=generator, device=dev)
+    mask_on = torch.ones(n, device=dev)
+    mask_off = torch.zeros(n, device=dev)
+    caches = [x.cpu()]
+    for i in range(num_ts):
+        t = torch.full((n,), i / num_ts, device=dev)
+        v_c = unet(x, c, t, mask_on)
+        v_u = unet(x, c, t, mask_off)
+        v = v_u + guidance_scale * (v_c - v_u)
+        x = x + v / num_ts
+        if (i + 1) % 10 == 0 or i == num_ts - 1:
+            caches.append(x.cpu())
+    return x, torch.stack(caches, dim=1)</code></pre>
+
+      <h3 id="b25">2.5 Training the Class-Conditioned UNet</h3>
+      <p>
+        The training is the same as in 2.2 (D = 64, batch size 64, Adam with learning rate 1e-2, 10 epochs, and the
+        exponential scheduler with gamma = 0.1<sup>(1 / 10)</sup>), with the class labels, the 10% class dropout and
+        300 steps for sampling. I saved the model after epochs 1, 5 and 10.
+      </p>
+<pre><code>optimizer = torch.optim.Adam(fm.parameters(), lr=1e-2)
+scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1 ** (1.0 / 10))
+
+for epoch in range(10):
+    for images, labels in tqdm(loader):
+        images = images.to(device)
+        labels = labels.to(device)
+        loss = fm(images, labels)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    scheduler.step()</code></pre>
+      <figure class="wide narrow"><img src="media/b25_loss.png" alt="Training loss of the class-conditioned UNet"><figcaption>Training loss of the class-conditioned UNet with the scheduler</figcaption></figure>
+
+      <h3 id="b26">2.6 Sampling from the Class-Conditioned UNet</h3>
+      <p>
+        For each saved model I made 40 images: four for each digit from 0 to 9. Each row has the digits 0 to 9, and
+        there are four rows. I used 300 Euler steps, a guidance scale of 5, and the same seed for every model.
+      </p>
+<pre><code>labels_40 = torch.arange(10).repeat(4).to(device)
+samples, _ = fm.sample(labels_40, (28, 28), guidance_scale=5.0, seed=SEED)</code></pre>
+      <figure class="wide"><img src="media/b26_sched_1.png" alt="Class-conditioned samples after epoch 1"><figcaption><strong>Epoch 1</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b26_sched_5.png" alt="Class-conditioned samples after epoch 5"><figcaption><strong>Epoch 5</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b26_sched_10.png" alt="Class-conditioned samples after epoch 10"><figcaption><strong>Epoch 10</strong></figcaption></figure>
+      <p>
+        This is much better than the time-only model. Even after one epoch nearly every image is the right digit,
+        although some are a bit rough (for example some 2s and 4s). By epoch 5 the digits are cleaner, and at epoch
+        10 they are sharp, with a different handwriting style in each row. The class label is the main reason: the
+        model knows what to draw, so it only needs to learn the style.
+      </p>
+
+      <h4>Removing the learning rate scheduler</h4>
+      <p>
+        To compensate for removing the scheduler, I trained another model with a constant learning rate of 1e-3 for all 10
+        epochs, and kept everything else the same. I picked 1e-3 because it is where the scheduled run ends up
+        (it falls from 1e-2 to about 1e-3), and a constant 1e-2 with Adam could be unstable.
+      </p>
+<pre><code>optimizer = torch.optim.Adam(fm.parameters(), lr=1e-3)
+
+for epoch in range(10):
+    for images, labels in tqdm(loader):
+        images = images.to(device)
+        labels = labels.to(device)
+        loss = fm(images, labels)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()</code></pre>
+      <figure class="wide narrow"><img src="media/b25_nosched_loss.png" alt="Training loss of the class-conditioned UNet without the scheduler"><figcaption>Training loss without the scheduler (constant learning rate 1e-3)</figcaption></figure>
+      <figure class="wide"><img src="media/b26_nosched_1.png" alt="No-scheduler samples after epoch 1"><figcaption><strong>No scheduler, epoch 1</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b26_nosched_5.png" alt="No-scheduler samples after epoch 5"><figcaption><strong>No scheduler, epoch 5</strong></figcaption></figure>
+      <figure class="wide"><img src="media/b26_nosched_10.png" alt="No-scheduler samples after epoch 10"><figcaption><strong>No scheduler, epoch 10</strong></figcaption></figure>
+      <p>
+        <strong>Comparison.</strong> By epoch 10 the two models give similar results, and both end with a loss
+        around 0.08 to 0.09. The no-scheduler model looks better early on: at epoch 1 its digits are cleaner than
+        those of the scheduled model, which starts at a large learning rate (1e-2, with a big spike in the first
+        steps of its loss curve). The scheduled model has a smoother loss at the end because its learning rate has
+        become small. The constant rate keeps the loss a bit noisier. So the trade-off is this: with the scheduler
+        I can start with a high rate and let it settle by itself, but I need to choose the starting rate and the
+        decay. Without it there is one fewer thing to tune, but I have to find a single good rate by hand, which
+        needs to be small enough to be stable at the start and still good at the end.
+      </p>
+    </section>
+
+    <!-- ===================== B BELLS AND WHISTLES ===================== -->
+    <section id="bbw" class="part">
+      <div class="part-heading">
+        <span class="part-number">B+</span>
+        <h2>Bells &amp; Whistles for Part B</h2>
+      </div>
+      <p class="intro">
+        The time-only model has to make digits with no label, and its samples (shown again below) are worse than
+        the class-conditioned ones. I tried to improve it, with five changes:
+      </p>
+      <ul class="plain">
+        <li><strong>Bigger network:</strong> D = 128 instead of 64.</li>
+        <li><strong>More training:</strong> 20 epochs, batch size 128, Adam with a learning rate of 2e-3 and the same exponential decay.</li>
+        <li><strong>Better time features:</strong> instead of the plain number t, the input is t together with sine and cosine of t at 8 frequencies (17 numbers).</li>
+        <li><strong>More time conditioning:</strong> five fully connected blocks scale the features after down2, unflatten, up1, up2 and the last conv block. I use x * (1 + s) so that the scale starts near 1.</li>
+        <li><strong>EMA weights:</strong> I keep a slow moving average of the weights (decay 0.999) and use it for sampling. I also sample with 100 Euler steps instead of 50.</li>
+      </ul>
+<pre><code>def time_features(t, num_freqs=8):
+    t = t.view(-1, 1).float()
+    freqs = (2.0 ** torch.arange(num_freqs, device=t.device).float()) * math.pi
+    angles = t * freqs
+    return torch.cat([t, torch.sin(angles), torch.cos(angles)], dim=1)</code></pre>
+      <p>
+        In the UNet, each of the five blocks turns these features into a scale s, and the feature map is multiplied by (1 + s):
+      </p>
+<pre><code>f = time_features(t, self.num_freqs).to(x.dtype)
+s_down = self.fc_down(f).view(-1, 2 * self.D, 1, 1)
+...
+d2 = self.down2(d1) * (1 + s_down)
+unflat = self.unflatten(self.flatten(d2)) * (1 + s_flat)
+u1 = self.up1(torch.cat([unflat, d2], dim=1)) * (1 + s_up1)
+u2 = self.up2(torch.cat([u1, d1], dim=1)) * (1 + s_up2)
+c1 = self.conv1(torch.cat([u2, c0], dim=1)) * (1 + s_out)</code></pre>
+      <p>The EMA update is called after every optimizer step:</p>
+<pre><code>@torch.no_grad()
+def update_ema(ema_model, model, decay):
+    for p_ema, p in zip(ema_model.parameters(), model.parameters()):
+        p_ema.mul_(decay).add_(p.detach(), alpha=1 - decay)
+    for b_ema, b in zip(ema_model.buffers(), model.buffers()):
+        b_ema.copy_(b)</code></pre>
+      <p>
+        I call <code>update_ema(ema_unet, bw_unet, 0.999)</code> after every step, and the samples below come
+        from the EMA model.
+      </p>
+      <figure class="wide narrow"><img src="media/bbw_loss.png" alt="Training loss of the improved time-conditioned model"><figcaption>Training loss of the improved model (20 epochs)</figcaption></figure>
+      <p>
+        Here are 40 samples from the original time-only model and 40 from the improved one, using the same seeds
+        (0 to 39), so each picture in one figure starts from the same noise as in the other.
+      </p>
+      <figure class="wide"><img src="media/bbw_baseline.png" alt="Samples from the original time-conditioned model"><figcaption><strong>Original</strong> time-only model: D = 64, 10 epochs, 50 steps</figcaption></figure>
+      <figure class="wide"><img src="media/bbw_improved.png" alt="Samples from the improved time-conditioned model"><figcaption><strong>Improved</strong> time-only model: D = 128, 20 epochs, richer time features, EMA, 100 steps</figcaption></figure>
+      <p>
+        The improved model is a bit better. The strokes are cleaner and thicker, and more of the images are
+        clear digits (there are many clean 0s, 1s, 4s, 6s and 8s). Some samples are still not real digits, for
+        example some in the first row and the third row. I only judged this by looking at the samples, and I did not
+        measure it with a number. It is also still not as good as the class-conditioned model, which makes the
+        right digit every time. I did not test each change on its own, so I cannot say which of the five changes
+        helped the most.
+      </p>
+    </section>
+
+    <!-- ===================== WHAT I LEARNED ===================== -->
+    <section id="learned" class="part">
+      <div class="part-heading">
+        <span class="part-number">&bull;</span>
+        <h2>What I Learned</h2>
+      </div>
+      <ul class="plain">
+        <li><strong>Velocity, not noise.</strong> The model predicts x<sub>1</sub> - x<sub>0</sub>, and the clean image estimate is x<sub>t</sub> + (1 - t) v. The velocity plots showed me that the error is largest on fine details, and that it gets small as t gets closer to 1.</li>
+        <li><strong>Many small steps beat one big step.</strong> One step gives a smooth average, and Euler sampling brings back the sharp details. The same idea shows up in Part B: a single step from pure noise gives only the average digit.</li>
+        <li><strong>Guidance makes a big difference.</strong> With classifier-free guidance, the faces in Part A became much cleaner, and in Part B the class-conditioned model made the right digit almost every time.</li>
+        <li><strong>The starting time controls the edit.</strong> A small t<sub>start</sub> changes the image a lot, and a larger one keeps it close. Simple drawings on a white background hardly change unless the noise is very strong.</li>
+        <li><strong>Illusions need luck and several tries.</strong> Visual anagrams and hybrid images depend a lot on the prompt pair and on the seed. Some pairs did not work for me, so I kept the ones that did and showed a few other seeds for comparison.</li>
+        <li><strong>Small things matter in training.</strong> The learning rate scheduler changed how the first epochs looked, and the pure-noise experiment showed me clearly that an MSE loss gives the average when the input has no information.</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Project 3 &middot; Flow Models</p>
+  </footer>
+
+</body>
+</html>
