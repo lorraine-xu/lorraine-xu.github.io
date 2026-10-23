@@ -40,19 +40,9 @@
       </div>
       <p class="intro">
         Part A uses a pretrained model called PixNerd-XXL-P16-T2I. It makes 512 &times; 512 images
-        from a text prompt, and I did no training. The text prompt is turned into an embedding
-        with <code>model.encode(prompt)</code>, which is provided in the starter notebook.
+        from a text prompt, and I did no training. Unless I say otherwise, I used the step size
+        h = 0.02, the guidance weight w = 7 (when guidance is used) and random seed 180, on a Tesla T4 GPU.
       </p>
-      <div class="note">
-        <strong>The setup.</strong> A clean image is x<sub>1</sub> and noise is x<sub>0</sub> = &epsilon;,
-        where &epsilon; comes from a standard Gaussian. The noisy image at time t is
-        x<sub>t</sub> = (1 - t) x<sub>0</sub> + t x<sub>1</sub>, so t = 0 is pure noise and t = 1
-        is the clean image. The model takes (x<sub>t</sub>, t, prompt) and predicts the velocity
-        x<sub>1</sub> - x<sub>0</sub>. To make an image, I start from noise and take Euler steps
-        along this velocity. Unless I say otherwise, I used the step size h = 0.02, the guidance
-        weight w = 7 (when guidance is used), and random seed 180. Everything ran in float32 on a
-        Tesla T4 GPU, and the peak GPU memory was about 11.5 GiB.
-      </div>
 
       <ul class="sub-toc">
         <li><a href="#a11">1.1 Noisy inputs</a></li>
@@ -65,10 +55,12 @@
 
       <h3 id="a11">1.1 Constructing Noisy Training Inputs</h3>
       <p>
-        I used a photo of a cake as my own image (not the Campanile). The starter code center-crops
-        it, resizes it to 512 &times; 512, and puts the RGB values in [-1, 1]. I sampled one noise
-        tensor &epsilon; and used the same one for all three times, t = 0.25, 0.50 and 0.75. I also
-        saved the original image, the noise and the noisy images for the later parts.
+        I used a photo of a cake. It is center-cropped and resized to 512 &times; 512, with the RGB
+        values in [-1, 1]. Let x<sub>1</sub> be the clean image and &epsilon; be Gaussian noise. The noisy
+        image at time t is x<sub>t</sub> = (1 - t) &epsilon; + t x<sub>1</sub>, so t = 0 is pure noise and
+        t = 1 is the clean image. The model takes (x<sub>t</sub>, t, prompt) and predicts the velocity
+        x<sub>1</sub> - &epsilon;. I sampled one noise tensor and used the same one for t = 0.25, 0.50
+        and 0.75, and I reuse it in 1.2 to 1.5.
       </p>
 <pre><code>def interpolate(image, noise, t):
     return (1 - t) * noise + t * image</code></pre>
@@ -84,9 +76,9 @@
         x<sub>t</sub> / t = x<sub>1</sub> + ((1 - t) / t) &epsilon;. This brings the image back to its
         normal brightness, but the noise is now multiplied by (1 - t) / t, which is 3 at t = 0.25, 1
         at t = 0.5 and 1/3 at t = 0.75. Then I blur with
-        <code>torchvision.transforms.functional.gaussian_blur</code>. To pick &sigma;, I used the
-        sweep in the starter notebook. It tries &sigma; = 1, 2, 4, 8 and 16 (kernel size
-        6&sigma; + 1) and keeps the one with the lowest mean squared error to the clean image.
+        <code>torchvision.transforms.functional.gaussian_blur</code>. To pick &sigma;, I tried
+        &sigma; = 1, 2, 4, 8 and 16 (kernel size 6&sigma; + 1) and kept the one with the lowest mean
+        squared error to the clean image.
       </p>
       <table class="offsets">
         <tr><th>Time t</th><th class="mono">Best &sigma;</th></tr>
@@ -113,10 +105,6 @@
 <pre><code>def one_step_denoise(x, t, condition, predict_velocity):
     v = predict_velocity(x, t, condition)
     return x + (1 - t) * v</code></pre>
-      <p>
-        I also checked that the velocity has the same shape, dtype and device as the image, and that
-        all its values are finite.
-      </p>
       <figure class="wide"><img src="media/a13_onestep_025.jpg" alt="Original, noisy and one-step result at t = 0.25"><figcaption><strong>t = 0.25</strong>: original, noisy input, one-step estimate</figcaption></figure>
       <figure class="wide"><img src="media/a13_onestep_050.jpg" alt="Original, noisy and one-step result at t = 0.5"><figcaption><strong>t = 0.50</strong>: original, noisy input, one-step estimate</figcaption></figure>
       <figure class="wide"><img src="media/a13_onestep_075.jpg" alt="Original, noisy and one-step result at t = 0.75"><figcaption><strong>t = 0.75</strong>: original, noisy input, one-step estimate</figcaption></figure>
@@ -136,7 +124,6 @@
         original image is (1 - t) v<sub>gt</sub> = x<sub>1</sub> - x<sub>t</sub>. For every pixel, the
         error is the root mean square over the three color channels:
         E<sub>t</sub> = sqrt(mean over RGB of [(1 - t)(v&#770;<sub>t</sub> - v<sub>gt</sub>)]<sup>2</sup>).
-        I computed this before any scaling or clipping.
       </p>
 <pre><code>@torch.inference_mode()
 def velocity_diagnostics(x_t, t, clean_image, epsilon, condition, predict_velocity):
@@ -152,7 +139,7 @@ def velocity_diagnostics(x_t, t, clean_image, epsilon, condition, predict_veloci
         with the maximum taken over all three maps.
       </p>
       <div class="compare fit-row" style="grid-template-columns: 1fr 3fr;">
-        <figure><div class="frame fit"><img src="media/a14_original.jpg" alt="Original cake photo"></div><figcaption><strong>Original</strong> (shown once)</figcaption></figure>
+        <figure><div class="frame fit"><img src="media/a14_original.jpg" alt="Original cake photo"></div><figcaption><strong>Original</strong></figcaption></figure>
         <div></div>
       </div>
       <figure class="wide"><img src="media/a14_t025.jpg" alt="Noisy image, predicted update, ground truth update and error at t = 0.25"><figcaption><strong>t = 0.25</strong>: noisy image, predicted update, ground truth update, error</figcaption></figure>
@@ -174,7 +161,7 @@ def velocity_diagnostics(x_t, t, clean_image, epsilon, condition, predict_veloci
         the model for a new velocity after each one: x<sub>t+h</sub> = x<sub>t</sub> + h v<sub>&theta;</sub>(x<sub>t</sub>, t, c).
         My function uses h = 0.02. It shortens the last step so that the integration ends exactly at
         t = 1, and it returns the final image along with the saved states (the start, every fifth update,
-        and the end). I keep the state in float32.
+        and the end).
       </p>
 <pre><code>@torch.inference_mode()
 def euler_sample(x_start, t_start, step_size, velocity):
@@ -403,8 +390,8 @@ def visual_anagrams(noise, condition_a, condition_b, predict_velocity, w=7, step
       <figure class="wide narrow"><img src="media/a33_village.jpg" alt="Visual anagram of a snowy mountain village and a horse"><figcaption>"a lithograph of a snowy mountain village" (upright) and "a lithograph of a horse" (rotated), seed 181</figcaption></figure>
       <p>
         Both subjects can be recognized in each illusion. In the first one the old man's face is a bit odd, and
-        in the second one a piece of the horse (the eye) shows up in the village view. I used the example prompts
-        from the starter notebook, and they worked with the first seeds I tried.
+        in the second one a piece of the horse (the eye) shows up in the village view. These prompts worked with
+        the first seeds I tried.
       </p>
 
       <h3 id="a34">3.4 Hybrid Images</h3>
@@ -498,10 +485,6 @@ def rotate90_inverse(x):
 
 def negate(x):
     return -x</code></pre>
-      <p>
-        I checked that <code>rotate90_inverse(rotate90(x))</code> and <code>negate(negate(x))</code> both give
-        back x exactly.
-      </p>
 
       <h4>90 degree rotation: tall tree and fish</h4>
       <p>
